@@ -1,0 +1,24 @@
+*.iml
+.gradle
+/local.properties
+# Local IDE state - not portable/useful to other contributors, and some files (workspace.xml,
+# deploymentTargetSelector.xml, assetWizardSettings.xml) capture local absolute paths.
+/.idea
+.DS_Store
+/build
+/captures
+# Built APK/AAB output and baseline profiles - build artifacts, not source. Also may contain a
+# real signed release APK from local testing - never commit binaries like this into source
+# control regardless of signing status.
+/app/release
+.externalNativeBuild
+.cxx
+local.properties
+
+# Real backend URL, signing-cert hash, and Cloud project number - see gradle.properties.example
+# for the template committed instead. Never commit the real file.
+/gradle.properties
+
+# Signing keystores - never commit these regardless of extension/location used.
+*.jks
+*.keystore

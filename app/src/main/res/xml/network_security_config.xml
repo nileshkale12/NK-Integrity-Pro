@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pins for nk-integrity-backend.onrender.com (generated 2026-07-05):
+    1. Leaf cert (onrender.com, issued by Google Trust Services WE1) - primary pin.
+    2. WE1 intermediate CA - backup pin, survives leaf cert renewal.
+  Regenerate leaf pin when the backend's cert rotates:
+    echo | openssl s_client -connect nk-integrity-backend.onrender.com:443 \
+      -servername nk-integrity-backend.onrender.com 2>/dev/null \
+      | openssl x509 -pubkey -noout \
+      | openssl pkey -pubin -outform der \
+      | openssl dgst -sha256 -binary | openssl enc -base64
+
+  nk-sslpinning-testbed.onrender.com (added 2026-07-19): an isolated Render service used
+  only for red-team-testing the "SSL Pinning Health"/"TrustManager Tamper Check" checks in
+  MainViewModel.kt (debug builds only, see BuildConfig.PINNING_TESTBED_URL) - kept fully
+  separate from the real backend above so bypass experiments can never touch production.
+  Confirmed 2026-07-19: Render terminates TLS with the SAME shared "CN=onrender.com" /
+  Google Trust Services WE1 cert used by the real backend, so the pin values are identical -
+  not a coincidence, just shared edge infrastructure. Still a valid MITM check: a Burp/
+  mitmproxy interception presents its own distinct cert, which will not match either pin.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">nk-integrity-backend.onrender.com</domain>
+        <pin-set expiration="2027-07-05">
+            <pin digest="SHA-256">NnfKqDbhvUeabxD97xg7r9JvWoGY7BJjg8XThNJxVbk=</pin>
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+        </pin-set>
+    </domain-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">nk-sslpinning-testbed.onrender.com</domain>
+        <pin-set expiration="2027-07-19">
+            <pin digest="SHA-256">NnfKqDbhvUeabxD97xg7r9JvWoGY7BJjg8XThNJxVbk=</pin>
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+        </pin-set>
+    </domain-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">google.com</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
