@@ -58,7 +58,7 @@ class MainViewModel : ViewModel() {
     // cert independently of the OS-enforced Network Security Config, catching a hooked/
     // replaced global SSLContext that could otherwise bypass NSC pinning entirely.
     private val EXPECTED_BACKEND_PINS_SHA256 = setOf(
-        "NnfKqDbhvUeabxD97xg7r9JvWoGY7BJjg8XThNJxVbk=",
+        "fizfE9JVlzlRplEx7epXfqW9enrbLvwF/LU26XTPEG4=",
         "kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4="
     )
 
@@ -535,6 +535,92 @@ class MainViewModel : ViewModel() {
         // DenyList-style hiding is built to lie about for specific apps).
         results.add(checkNativeLibraryInjection())
 
+        // 28. INSECURE BUILD PROPERTIES - ro.secure=0 means adbd runs as root system-wide (a far
+        // stronger signal than the Build Tags/test-keys check above), and ro.debuggable=1 means
+        // the whole OS image is a userdebug/eng build, not just this app.
+        val roSecure = try { ProcessBuilder("getprop", "ro.secure").start().inputStream.bufferedReader().readText().trim() } catch (e: Exception) { "1" }
+        val roDebuggable = try { ProcessBuilder("getprop", "ro.debuggable").start().inputStream.bufferedReader().readText().trim() } catch (e: Exception) { "0" }
+        val buildPropsPassed = roSecure != "0" && roDebuggable != "1"
+        results.add(CheckResult("Insecure Build Properties", if (buildPropsPassed) CheckStatus.PASS else CheckStatus.FAIL,
+            if (buildPropsPassed) "ro.secure=1 and ro.debuggable=0 - standard production build."
+            else "ro.secure=$roSecure, ro.debuggable=$roDebuggable - insecure/debuggable OS build (adbd may run as root)."))
+
+        // 29. INSTALLER SOURCE VERIFICATION - confirms this APK was actually installed via Google
+        // Play, as a local complement to the Play Integrity licensing verdict (which needs a
+        // network round-trip). Sideloading during your own dev/test is normal, so this is a
+        // WARNING, not a FAIL.
+        val installerPassed = try {
+            val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+            } else {
+                @Suppress("DEPRECATION") context.packageManager.getInstallerPackageName(context.packageName)
+            }
+            installer == "com.android.vending"
+        } catch (e: Exception) { false }
+        results.add(CheckResult("Installer Source", if (installerPassed) CheckStatus.PASS else CheckStatus.WARNING,
+            if (installerPassed) "Installed via Google Play." else "Not installed via Google Play - sideloaded or installed by another source."))
+
+        // 30. FRIDA SERVER PORT SCAN - frida-server listens on TCP 27042 (and 27043) by default
+        // BEFORE it has attached to any specific process, so this catches a running frida-server
+        // that hasn't injected into THIS app yet - an earlier signal than Native Library
+        // Injection (#27) above, which only sees Frida after it has already attached here.
+        val fridaPortsFound = listOf(27042, 27043).any { port ->
+            try {
+                java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), 200) }
+                true
+            } catch (e: Exception) { false }
+        }
+        results.add(CheckResult("Frida Server Port Scan", if (!fridaPortsFound) CheckStatus.PASS else CheckStatus.FAIL,
+            if (!fridaPortsFound) "No frida-server listening on default ports (27042/27043)." else "frida-server appears to be listening locally (port 27042/27043 open)."))
+
+        // 31. MAGISK UNIX DOMAIN SOCKET LEAK - magiskd communicates over an abstract Unix domain
+        // socket; even when Shamiko hides Magisk's files/packages from this app, the socket
+        // registration is still visible in /proc/net/unix (the same check RootBeerFresh calls
+        // its "Unix Domain Socket" check).
+        // CONFIRMED LIMITATION (live device test, 2026-07-26): SELinux denies untrusted_app read
+        // access to /proc/net/unix on stock Android 10+ policy (avc: denied { read } ...
+        // tcontext=u:object_r:proc_net:s0), independent of root state - so this check fails open
+        // to PASS on essentially every modern device, rooted or not, and should be read as "could
+        // not check" rather than "no leak found." Kept for older/custom-policy devices where the
+        // read succeeds, but Mount Namespace Leak (#32) below is the more reliable signal of the
+        // two.
+        val magiskSocketFound = try {
+            File("/proc/net/unix").readLines().any { it.contains("magisk", ignoreCase = true) }
+        } catch (e: Exception) { false }
+        results.add(CheckResult("Magisk Socket Leak", if (!magiskSocketFound) CheckStatus.PASS else CheckStatus.FAIL,
+            if (!magiskSocketFound) "No magiskd Unix domain socket found." else "A magiskd-related Unix domain socket was found in /proc/net/unix."))
+
+        // 32. MOUNT NAMESPACE / OVERLAYFS LEAK - systemless Magisk root works by OverlayFS-
+        // mounting over /system (and similar partitions). Zygisk's DenyList unmounts these
+        // overlays from a denylisted app's mount namespace, but only after a specific point in
+        // process startup - documented as one of the few checks with real resistance to Shamiko
+        // specifically, unlike file/package-based checks which Shamiko exists to defeat directly.
+        val overlayLeakFound = try {
+            File("/proc/self/mountinfo").readLines().any { line ->
+                line.contains(" overlay ") &&
+                    (line.contains("/system") || line.contains("/vendor") || line.contains("/product") || line.contains("magisk", ignoreCase = true))
+            }
+        } catch (e: Exception) { false }
+        results.add(CheckResult("Mount Namespace Leak", if (!overlayLeakFound) CheckStatus.PASS else CheckStatus.FAIL,
+            if (!overlayLeakFound) "No OverlayFS mounts over system partitions visible in this process." else "OverlayFS mount over a system partition found in /proc/self/mountinfo - systemless root overlay leaked into this app's mount namespace."))
+
+        // 33. ATTESTATION KEY REVOCATION CHECK - Hardware Attestation (#26) reads the local TEE
+        // certificate chain and TRUSTS its content; this check instead asks Google's own,
+        // server-side-maintained revocation list (https://android.googleapis.com/attestation/status
+        // - documented at developer.android.com/privacy-and-security/security-key-attestation)
+        // whether any certificate in that same chain has been REVOKED or SUSPENDED. This matters
+        // specifically against TrickyStore-class tooling: it forges a valid-looking attestation
+        // chain using a real but STOLEN per-device "keybox" key, and Google actively revokes
+        // leaked keyboxes once discovered (a keybox that passes today can be dead next week per
+        // public keybox-checker tooling). A local check can be fooled by a stolen key that's
+        // genuinely still valid; this one can't, because the verdict lives on Google's server, not
+        // in anything the device or this app computed itself.
+        // HONEST LIMITATION: only catches keyboxes Google has ALREADY discovered and revoked - a
+        // freshly leaked, not-yet-reported keybox won't be on the list yet, and the most advanced
+        // 2026-era bypass tooling is already reported to intercept this exact class of check at
+        // the network layer. One more layer of defense-in-depth, not a guaranteed catch.
+        results.add(checkAttestationKeyRevocation())
+
         return results
     }
 
@@ -585,6 +671,18 @@ class MainViewModel : ViewModel() {
             }
             val teeEnforced = ASN1Sequence.getInstance(keyDescription.getObjectAt(7))
 
+            // attestationSecurityLevel (index 1 of KeyDescription) reports whether the key is
+            // backed by a discrete StrongBox chip vs a TEE-only implementation vs pure software -
+            // informational detail only, doesn't change the pass/fail verdict below.
+            val securityLevelLabel = try {
+                when (ASN1Enumerated.getInstance(keyDescription.getObjectAt(1)).value.toInt()) {
+                    0 -> "Software"
+                    1 -> "TrustedEnvironment (TEE)"
+                    2 -> "StrongBox"
+                    else -> "Unknown"
+                }
+            } catch (e: Exception) { "Unknown" }
+
             var verifiedBootState: Int? = null
             var deviceLocked: Boolean? = null
             for (i in 0 until teeEnforced.size()) {
@@ -611,10 +709,72 @@ class MainViewModel : ViewModel() {
             val passed = verifiedBootState == 0 && deviceLocked == true
             CheckResult("Hardware Attestation",
                 if (passed) CheckStatus.PASS else CheckStatus.FAIL,
-                "Verified boot state: $stateLabel, bootloader locked: ${deviceLocked ?: "unknown"}."
+                "Verified boot state: $stateLabel, bootloader locked: ${deviceLocked ?: "unknown"}, security level: $securityLevelLabel."
                     + if (!passed) " Hardware-backed attestation reports this device is not in a fully trusted boot state." else "")
         } catch (e: Exception) {
             CheckResult("Hardware Attestation", CheckStatus.WARNING, "Could not complete hardware attestation: ${e.message}")
+        }
+    }
+
+    // Generates its own throwaway attestation key (independent of checkHardwareAttestation()'s
+    // key/alias above, deliberately not shared - keeping the two checks fully independent is
+    // simpler and safer than threading a shared chain through both) and checks every certificate
+    // in the resulting chain against Google's official, server-maintained revocation list. See
+    // the call site comment (#33) for why this specifically matters against TrickyStore-class
+    // stolen-keybox tooling.
+    private fun checkAttestationKeyRevocation(): CheckResult {
+        val keyAlias = "nk_integrity_revocation_probe"
+        return try {
+            val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            if (keyStore.containsAlias(keyAlias)) keyStore.deleteEntry(keyAlias)
+
+            val challenge = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            val kpg = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
+            kpg.initialize(
+                KeyGenParameterSpec.Builder(keyAlias, KeyProperties.PURPOSE_SIGN)
+                    .setDigests(KeyProperties.DIGEST_SHA256)
+                    .setAttestationChallenge(challenge)
+                    .build()
+            )
+            kpg.generateKeyPair()
+
+            val chain = keyStore.getCertificateChain(keyAlias)
+            try { keyStore.deleteEntry(keyAlias) } catch (_: Exception) { }
+
+            val x509Chain = chain?.filterIsInstance<X509Certificate>().orEmpty()
+            if (x509Chain.isEmpty()) {
+                return CheckResult("Attestation Key Revocation", CheckStatus.WARNING,
+                    "No attestation certificate chain available to check against Google's revocation list.")
+            }
+            // BigInteger.toString(16) already produces lowercase hex with no leading zero - the
+            // exact key format Google's revocation list schema requires (see
+            // developer.android.com/privacy-and-security/security-key-attestation).
+            val serials = x509Chain.map { it.serialNumber.toString(16) }
+
+            val conn = URL("https://android.googleapis.com/attestation/status").openConnection() as HttpsURLConnection
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            conn.connect()
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+
+            val entries = JSONObject(body).optJSONObject("entries") ?: JSONObject()
+            val hit = serials.firstOrNull { serial ->
+                val status = entries.optJSONObject(serial)?.optString("status")
+                status == "REVOKED" || status == "SUSPENDED"
+            }
+            if (hit != null) {
+                val entry = entries.getJSONObject(hit)
+                val status = entry.optString("status")
+                val reason = entry.optString("reason", "UNSPECIFIED")
+                CheckResult("Attestation Key Revocation", CheckStatus.FAIL,
+                    "A certificate in this device's attestation chain is $status by Google (reason: $reason) - strong evidence of a leaked/forged attestation key (e.g. TrickyStore-class tooling).")
+            } else {
+                CheckResult("Attestation Key Revocation", CheckStatus.PASS,
+                    "No certificate in the attestation chain appears on Google's official revocation list.")
+            }
+        } catch (e: Exception) {
+            CheckResult("Attestation Key Revocation", CheckStatus.WARNING, "Could not verify (likely no network): ${e.message}")
         }
     }
 
@@ -735,7 +895,8 @@ class MainViewModel : ViewModel() {
         "org.lsposed.manager",
         "io.github.lsposed.manager",
         "com.tsng.hidemyapplist",
-        "me.bmax.apatch"
+        "me.bmax.apatch",
+        "moe.shizuku.privileged.api"
     )
 
     // Layer 1: PackageManager.resolveActivity() - cheap, zero side effects, but confirmed

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Pins for nk-integrity-backend.onrender.com (generated 2026-07-05):
+  Pins for nk-integrity-backend.onrender.com (regenerated 2026-07-26 - Render rotated the
+  leaf cert since the 2026-07-05 pin was generated; the WE1 intermediate below is unchanged):
     1. Leaf cert (onrender.com, issued by Google Trust Services WE1) - primary pin.
     2. WE1 intermediate CA - backup pin, survives leaf cert renewal.
   Regenerate leaf pin when the backend's cert rotates:
@@ -22,15 +23,15 @@
 <network-security-config>
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="true">nk-integrity-backend.onrender.com</domain>
-        <pin-set expiration="2027-07-05">
-            <pin digest="SHA-256">NnfKqDbhvUeabxD97xg7r9JvWoGY7BJjg8XThNJxVbk=</pin>
+        <pin-set expiration="2027-07-26">
+            <pin digest="SHA-256">fizfE9JVlzlRplEx7epXfqW9enrbLvwF/LU26XTPEG4=</pin>
             <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
         </pin-set>
     </domain-config>
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="true">nk-sslpinning-testbed.onrender.com</domain>
-        <pin-set expiration="2027-07-19">
-            <pin digest="SHA-256">NnfKqDbhvUeabxD97xg7r9JvWoGY7BJjg8XThNJxVbk=</pin>
+        <pin-set expiration="2027-07-26">
+            <pin digest="SHA-256">fizfE9JVlzlRplEx7epXfqW9enrbLvwF/LU26XTPEG4=</pin>
             <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
         </pin-set>
     </domain-config>

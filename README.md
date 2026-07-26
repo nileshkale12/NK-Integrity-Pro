@@ -1,6 +1,6 @@
 # NK Integrity Pro
 
-A native Android security/integrity self-check dashboard. Runs 27 local device-tamper checks plus
+A native Android security/integrity self-check dashboard. Runs 32 local device-tamper checks plus
 a server-verified Google Play Integrity attestation, and reports results in a clean, real-time
 dashboard.
 
@@ -29,7 +29,7 @@ defeating all of them convincingly requires meaningfully more effort than any on
 
 ## Features
 
-**27 local security checks**, filterable by severity (Low/Medium/High):
+**32 local security checks**, filterable by severity (Low/Medium/High):
 
 | Check | Severity | What it does |
 |---|---|---|
@@ -60,6 +60,11 @@ defeating all of them convincingly requires meaningfully more effort than any on
 | Root Manager Launch Probe | High | Two-layer PackageManager + real-launch-attempt probe |
 | Hardware Attestation | High | TEE/StrongBox verified-boot + bootloader-lock check |
 | Native Library Injection | High | Live memory-map + thread-name scan for Frida/Xposed |
+| Insecure Build Properties | High | `ro.secure` / `ro.debuggable` system property check |
+| Installer Source | Medium | Verifies install came from Google Play |
+| Frida Server Port Scan | High | Local scan for a listening frida-server (27042/27043) |
+| Magisk Socket Leak | High | `magiskd`'s abstract Unix domain socket in `/proc/net/unix` (often blocked by SELinux on Android 10+) |
+| Mount Namespace Leak | High | OverlayFS-over-`/system` leak in `/proc/self/mountinfo` |
 
 **Play Integrity tab** — requests a Google Play Integrity token and sends it to your own backend
 for server-side verification (device integrity, app recognition, and licensing verdicts). The

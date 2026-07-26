@@ -130,7 +130,13 @@ val checkSeverity = mapOf(
     "MITM Proxy Detection" to CheckSeverity.MEDIUM,
     "Root Manager Launch Probe" to CheckSeverity.HIGH,
     "Hardware Attestation" to CheckSeverity.HIGH,
-    "Native Library Injection" to CheckSeverity.HIGH
+    "Native Library Injection" to CheckSeverity.HIGH,
+    "Insecure Build Properties" to CheckSeverity.HIGH,
+    "Installer Source" to CheckSeverity.MEDIUM,
+    "Frida Server Port Scan" to CheckSeverity.HIGH,
+    "Magisk Socket Leak" to CheckSeverity.HIGH,
+    "Mount Namespace Leak" to CheckSeverity.HIGH,
+    "Attestation Key Revocation" to CheckSeverity.HIGH
 )
 
 // Global, reactive current check-mode selection - mirrors the NkTheme.isDark pattern
@@ -174,7 +180,13 @@ val checkDescriptions = mapOf(
     "MITM Proxy Detection" to "Checks for an active system HTTP proxy that could indicate traffic interception.",
     "Root Manager Launch Probe" to "Two-layer check: PackageManager resolution, then a real launch attempt via a different code path if the first layer finds nothing.",
     "Hardware Attestation" to "Generates a hardware-backed key and inspects its TEE/StrongBox attestation certificate for verified-boot state and bootloader lock, independent of any file/package-based check.",
-    "Native Library Injection" to "Scans this process's own live memory map and thread list for known hooking-framework footprints (Frida, Xposed/LSPosed), rather than trusting a package-manager query."
+    "Native Library Injection" to "Scans this process's own live memory map and thread list for known hooking-framework footprints (Frida, Xposed/LSPosed), rather than trusting a package-manager query.",
+    "Insecure Build Properties" to "Checks ro.secure and ro.debuggable system properties for a whole-OS insecure/debuggable build, beyond this app's own Build Tags/Debug Build checks.",
+    "Installer Source" to "Verifies the app was installed via Google Play rather than sideloaded, as a local complement to the Play Integrity licensing verdict.",
+    "Frida Server Port Scan" to "Scans for a frida-server listening on its default ports (27042/27043), catching it before it attaches to this specific process.",
+    "Magisk Socket Leak" to "Checks /proc/net/unix for magiskd's abstract Unix domain socket, which stays visible even when files/packages are hidden. Note: often blocked by SELinux on Android 10+, in which case this fails open to PASS.",
+    "Mount Namespace Leak" to "Checks /proc/self/mountinfo for an OverlayFS mount over /system or /vendor - systemless root's own mount leaking into this app's namespace.",
+    "Attestation Key Revocation" to "Checks every certificate in this device's hardware attestation chain against Google's own server-side revocation list - catches a leaked/stolen keybox (e.g. TrickyStore) once Google discovers and revokes it, even if the local Hardware Attestation check above is fooled."
 )
 
 val checkRemediation = mapOf(
@@ -204,7 +216,13 @@ val checkRemediation = mapOf(
     "MITM Proxy Detection" to "Disable any configured HTTP/HTTPS proxy under Wi-Fi settings if you don't intend to route traffic through one.",
     "Root Manager Launch Probe" to "Uninstall the detected root-manager app or use a stock, unrooted device.",
     "Hardware Attestation" to "Use a stock, unmodified boot image with a locked bootloader; a custom/forged attestation chain (e.g. TrickyStore-class tools) can spoof this check on a per-app basis, so treat it as one signal among several, not a sole source of truth.",
-    "Native Library Injection" to "Detach any attached Frida session or uninstall the Xposed/LSPosed framework before using the app."
+    "Native Library Injection" to "Detach any attached Frida session or uninstall the Xposed/LSPosed framework before using the app.",
+    "Insecure Build Properties" to "Install an official, secure/production OS build rather than a userdebug/eng image.",
+    "Installer Source" to "Install the app from Google Play rather than sideloading, if you need this signal to pass.",
+    "Frida Server Port Scan" to "Stop any running frida-server process on the device.",
+    "Magisk Socket Leak" to "Uninstall Magisk; magiskd's socket is present whenever its daemon is running.",
+    "Mount Namespace Leak" to "Uninstall Magisk/systemless root or flash a stock, unmodified system image.",
+    "Attestation Key Revocation" to "Use a stock, unmodified device; a revoked/suspended key means this device's attestation chain relies on a leaked keybox (e.g. TrickyStore) that Google has already flagged."
 )
 
 // ============================================================
