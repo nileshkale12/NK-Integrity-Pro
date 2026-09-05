@@ -6,9 +6,9 @@ Google Play Integrity attestation, and reports results in a clean, real-time das
 
 ## Screenshots
 
-| Clean device | Issues detected | Per-check detail |
-|---|---|---|
-| ![Security tab, all checks passing](docs/screenshots/security-tab-safe.png) | ![Security tab, issues found](docs/screenshots/security-tab-issues.png) | ![Checks tab, individual results](docs/screenshots/checks-tab-detail.png) |
+| Clean device | Issues detected | Per-check detail | Play Integrity (server-verified) |
+|---|---|---|---|
+| ![Security tab, all checks passing](docs/screenshots/security-tab-safe.png) | ![Security tab, issues found](docs/screenshots/security-tab-issues.png) | ![Checks tab, individual results](docs/screenshots/checks-tab-detail.png) | ![Play Integrity tab, detailed report](docs/screenshots/play-integrity-tab.png) |
 
 ## Why
 
