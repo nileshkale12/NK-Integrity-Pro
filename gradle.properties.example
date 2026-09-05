@@ -57,3 +57,14 @@ NK_CLOUD_PROJECT_NUMBER=000000000000
 # self-tests, kept apart from the real backend so bypass experiments never touch
 # production. Can be the same as NK_BACKEND_BASE_URL if you don't need this separation.
 NK_PINNING_TESTBED_URL=https://your-testbed.example.com
+
+# Release signing. Generate a keystore with:
+#   keytool -genkeypair -v -keystore your-release.jks -storetype PKCS12 \
+#     -alias your-alias -keyalg RSA -keysize 2048 -validity 10950
+# Keep the .jks file OUTSIDE version control (already gitignored via *.jks/*.keystore) and back
+# it up somewhere durable - losing it means you can never sign an update to this app again under
+# the same identity. NK_RELEASE_KEYSTORE_FILE is relative to the project root.
+NK_RELEASE_KEYSTORE_FILE=your-release.jks
+NK_RELEASE_KEYSTORE_PASSWORD=REPLACE_WITH_YOUR_KEYSTORE_PASSWORD
+NK_RELEASE_KEY_ALIAS=your-alias
+NK_RELEASE_KEY_PASSWORD=REPLACE_WITH_YOUR_KEY_PASSWORD
