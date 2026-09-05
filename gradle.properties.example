@@ -38,11 +38,14 @@ android.newDsl=false
 # in your own values - the build will fail without them.
 # ---------------------------------------------------------------------------
 
-# SHA-256 of your release signing certificate, uppercase hex, no colons. Used by the "App
-# Signature" check to detect a repackaged/resigned APK. Get yours via:
-#   keytool -list -v -keystore your.keystore -alias your-alias
-# then reformat the SHA256 fingerprint (strip colons, uppercase).
-NK_EXPECTED_SIGNATURE_HASH=REPLACE_WITH_YOUR_RELEASE_CERT_SHA256_HASH
+# SHA-256 of your signing certificate(s), uppercase hex, no colons. Used by the "App Signature"
+# check to detect a repackaged/resigned APK. Split by build type since debug and release builds
+# are signed with different keystores. Get either one via:
+#   apksigner verify --print-certs your.apk
+# (or keytool -list -v -keystore your.keystore -alias your-alias), then reformat the SHA-256
+# fingerprint (strip colons, uppercase).
+NK_EXPECTED_SIGNATURE_HASH_DEBUG=REPLACE_WITH_YOUR_DEBUG_CERT_SHA256_HASH
+NK_EXPECTED_SIGNATURE_HASH_RELEASE=REPLACE_WITH_YOUR_RELEASE_CERT_SHA256_HASH
 
 # Your backend's base URL (used by the Play Integrity token-verification flow in
 # MainViewModel.kt). Must also be declared with a certificate pin in

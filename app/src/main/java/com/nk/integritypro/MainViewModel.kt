@@ -49,7 +49,10 @@ class MainViewModel : ViewModel() {
     // appIntegrity.appRecognitionVerdict returned by the backend in parseIntegrityReport(),
     // which is verified server-side by Google. EXPECTED_SIGNATURE_HASH below is a fast local
     // pre-check only.
-    private val EXPECTED_SIGNATURE_HASH = BuildConfig.EXPECTED_SIGNATURE_HASH
+    // Debug and release builds are signed with different keystores, so only one of these two
+    // constants can ever match a given build's real signature - pick the right one per variant.
+    private val EXPECTED_SIGNATURE_HASH =
+        if (BuildConfig.DEBUG) BuildConfig.EXPECTED_SIGNATURE_HASH_DEBUG else BuildConfig.EXPECTED_SIGNATURE_HASH_RELEASE
     private val BACKEND_BASE_URL = BuildConfig.BACKEND_BASE_URL
     private val CLOUD_PROJECT_NUMBER = BuildConfig.CLOUD_PROJECT_NUMBER
 

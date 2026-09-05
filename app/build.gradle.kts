@@ -17,7 +17,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "EXPECTED_SIGNATURE_HASH", "\"${project.property("NK_EXPECTED_SIGNATURE_HASH")}\"")
+        buildConfigField("String", "EXPECTED_SIGNATURE_HASH_DEBUG", "\"${project.property("NK_EXPECTED_SIGNATURE_HASH_DEBUG")}\"")
+        buildConfigField("String", "EXPECTED_SIGNATURE_HASH_RELEASE", "\"${project.property("NK_EXPECTED_SIGNATURE_HASH_RELEASE")}\"")
         buildConfigField("String", "BACKEND_BASE_URL", "\"${project.property("NK_BACKEND_BASE_URL")}\"")
         buildConfigField("long", "CLOUD_PROJECT_NUMBER", "${project.property("NK_CLOUD_PROJECT_NUMBER")}L")
         buildConfigField("String", "PINNING_TESTBED_URL", "\"${project.property("NK_PINNING_TESTBED_URL")}\"")
