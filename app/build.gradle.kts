@@ -21,6 +21,22 @@ android {
         buildConfigField("String", "BACKEND_BASE_URL", "\"${project.property("NK_BACKEND_BASE_URL")}\"")
         buildConfigField("long", "CLOUD_PROJECT_NUMBER", "${project.property("NK_CLOUD_PROJECT_NUMBER")}L")
         buildConfigField("String", "PINNING_TESTBED_URL", "\"${project.property("NK_PINNING_TESTBED_URL")}\"")
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+        externalNativeBuild {
+            cmake {
+                cppFlags += ""
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {

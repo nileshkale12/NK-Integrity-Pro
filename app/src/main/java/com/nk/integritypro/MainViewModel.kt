@@ -63,7 +63,10 @@ class MainViewModel : ViewModel() {
     )
 
     val logs = mutableStateListOf<LogEntry>()
-    var lastIntegrityResult = mutableStateOf("")
+    // A list of individually-styled CheckResult rows (same type the Security tab renders),
+    // rather than one big pre-formatted string - lets the UI render each verdict as its own
+    // icon+title+message row instead of parsing emoji-prefixed text lines back apart.
+    var lastIntegrityResult = mutableStateOf<List<CheckResult>>(emptyList())
     var lastSecurityResults = mutableStateOf<List<CheckResult>>(emptyList())
     var isScanning = mutableStateOf(false)
     var isIntegrityRunning = mutableStateOf(false)
@@ -111,6 +114,11 @@ class MainViewModel : ViewModel() {
             isIntegrityRunning.value = true
             val sampleNonce = Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(UUID.randomUUID().toString().toByteArray())
+            // Captured as plain Strings up front, not a Context reference - these need to survive
+            // an async network round-trip in sendTokenToServer/handleServerResponse below, and
+            // holding an Activity Context across that boundary would be a leak risk.
+            val expectedPackageName = context.packageName
+            val expectedCertHashHex = getAppSignature(context)
 
             val integrityManager = IntegrityManagerFactory.create(context)
             val tokenRequest = IntegrityTokenRequest.builder()
@@ -120,11 +128,11 @@ class MainViewModel : ViewModel() {
 
             integrityManager.requestIntegrityToken(tokenRequest)
                 .addOnSuccessListener { response ->
-                    sendTokenToServer(response.token(), sampleNonce)
+                    sendTokenToServer(response.token(), sampleNonce, expectedPackageName, expectedCertHashHex)
                 }
                 .addOnFailureListener { exception ->
                     val msg = "Error: ${exception.message ?: "Unknown"}"
-                    lastIntegrityResult.value = "❌ $msg"
+                    lastIntegrityResult.value = listOf(CheckResult("Play Integrity", CheckStatus.FAIL, msg))
                     logs.add(
                         LogEntry(
                             timestamp = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()),
@@ -139,7 +147,7 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    private fun sendTokenToServer(token: String, originalNonce: String) {
+    private fun sendTokenToServer(token: String, originalNonce: String, expectedPackageName: String, expectedCertHashHex: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val url = URL("$BACKEND_BASE_URL/verify-integrity")
@@ -160,114 +168,131 @@ class MainViewModel : ViewModel() {
                 if (conn.responseCode == HttpURLConnection.HTTP_OK) {
                     val responseBody = conn.inputStream.bufferedReader().use { it.readText() }
                     withContext(Dispatchers.Main) {
-                        handleServerResponse(responseBody, originalNonce)
+                        handleServerResponse(responseBody, originalNonce, expectedPackageName, expectedCertHashHex)
                     }
                 } else {
                     withContext(Dispatchers.Main) {
-                        lastIntegrityResult.value = "❌ Server error: HTTP ${conn.responseCode}"
+                        lastIntegrityResult.value = listOf(CheckResult("Play Integrity", CheckStatus.FAIL, "Server error: HTTP ${conn.responseCode}"))
                         isIntegrityRunning.value = false
                     }
                 }
                 conn.disconnect()
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    lastIntegrityResult.value = "❌ Backend unreachable: ${e.message}"
+                    lastIntegrityResult.value = listOf(CheckResult("Play Integrity", CheckStatus.FAIL, "Backend unreachable: ${e.message}"))
                     isIntegrityRunning.value = false
                 }
             }
         }
     }
 
-    private fun handleServerResponse(responseBody: String, originalNonce: String) {
-        val parsed = parseIntegrityReport(responseBody, originalNonce)
+    private fun handleServerResponse(responseBody: String, originalNonce: String, expectedPackageName: String, expectedCertHashHex: String) {
+        val parsed = parseIntegrityReport(responseBody, originalNonce, expectedPackageName, expectedCertHashHex)
         lastIntegrityResult.value = parsed
         val timestamp = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-        parsed.split("\n").forEach { line ->
-            if (line.isNotBlank()) {
-                val status = when {
-                    line.contains("✅") -> CheckStatus.PASS
-                    line.contains("❌") -> CheckStatus.FAIL
-                    line.contains("⚠️") -> CheckStatus.WARNING
-                    else -> CheckStatus.PASS
-                }
-                logs.add(
-                    LogEntry(
-                        timestamp = timestamp,
-                        checkName = "Play Integrity",
-                        status = status,
-                        message = line.trim(),
-                        isRemote = true
-                    )
+        parsed.forEach { result ->
+            logs.add(
+                LogEntry(
+                    timestamp = timestamp,
+                    checkName = "Play Integrity: ${result.name}",
+                    status = result.status,
+                    message = result.message,
+                    isRemote = true
                 )
-            }
+            )
         }
         isIntegrityRunning.value = false
     }
 
-    private fun parseIntegrityReport(jsonString: String, originalNonce: String): String {
+    // Returns one CheckResult per Play Integrity sub-verdict (same type/rendering the Security
+    // tab already uses for its 33 local checks) instead of one pre-formatted string blob - the
+    // UI renders each as its own icon+title+message row rather than parsing text lines back apart.
+    private fun parseIntegrityReport(jsonString: String, originalNonce: String, expectedPackageName: String, expectedCertHashHex: String): List<CheckResult> {
         return try {
             val json = JSONObject(jsonString)
-            val payload = json.optJSONObject("tokenPayloadExternal") ?: return "❌ Invalid JSON response."
+            val payload = json.optJSONObject("tokenPayloadExternal")
+                ?: return listOf(CheckResult("Play Integrity", CheckStatus.FAIL, "Invalid JSON response from backend."))
 
-            var report = "☁️ Play Integrity Report\n"
-            report += "----------------------------------------\n"
+            val results = mutableListOf<CheckResult>()
 
             val requestDetails = payload.optJSONObject("requestDetails")
             val receivedNonce = requestDetails?.optString("nonce", "MISSING")
-
-            report += "Nonce: ${if (receivedNonce == originalNonce) "✅ Match" else "❌ Mismatch"}\n"
+            val nonceMatches = receivedNonce == originalNonce
+            results.add(CheckResult("Nonce", if (nonceMatches) CheckStatus.PASS else CheckStatus.FAIL,
+                if (nonceMatches) "Matches the nonce this request sent - not a replayed response." else "Mismatch - this response's nonce doesn't match what was sent, possible replay."))
 
             val deviceIntegrity = payload.optJSONObject("deviceIntegrity")
             val deviceVerdicts = deviceIntegrity?.optJSONArray("deviceRecognitionVerdict")
             val deviceVerdictsStr = deviceVerdicts?.toString() ?: "[]"
-
-            report += "Device Integrity Verdicts: $deviceVerdictsStr\n"
-            if (deviceVerdictsStr.contains("MEETS_STRONG_INTEGRITY")) {
-                report += "  ✅ STRONG INTEGRITY – The device is fully trusted (hardware-backed).\n"
-            } else if (deviceVerdictsStr.contains("MEETS_DEVICE_INTEGRITY")) {
-                report += "  ✅ DEVICE INTEGRITY – The device is in a good state, but not as strong as strong integrity.\n"
-            } else if (deviceVerdictsStr.contains("MEETS_BASIC_INTEGRITY")) {
-                report += "  ⚠️ BASIC INTEGRITY – Minimal checks passed; might be a rooted or modified device.\n"
-            } else {
-                report += "  ❌ UNTRUSTED – The device is compromised or has no valid integrity.\n"
+            val (deviceStatus, deviceMsg) = when {
+                deviceVerdictsStr.contains("MEETS_STRONG_INTEGRITY") ->
+                    CheckStatus.PASS to "STRONG INTEGRITY - the device is fully trusted (hardware-backed). $deviceVerdictsStr"
+                deviceVerdictsStr.contains("MEETS_DEVICE_INTEGRITY") ->
+                    CheckStatus.PASS to "DEVICE INTEGRITY - the device is in a good state, but not as strong as strong integrity. $deviceVerdictsStr"
+                deviceVerdictsStr.contains("MEETS_BASIC_INTEGRITY") ->
+                    CheckStatus.WARNING to "BASIC INTEGRITY - minimal checks passed; might be a rooted or modified device. $deviceVerdictsStr"
+                else -> CheckStatus.FAIL to "UNTRUSTED - the device is compromised or has no valid integrity. $deviceVerdictsStr"
             }
+            results.add(CheckResult("Device Integrity", deviceStatus, deviceMsg))
 
-            // New: App Access Risk
             val environmentDetails = payload.optJSONObject("environmentDetails")
             val appAccessRisk = environmentDetails?.optJSONObject("appAccessRiskVerdict")
             if (appAccessRisk != null) {
                 val risk = appAccessRisk.optString("appsDetected", "NONE")
-                report += "App Access Risk: $risk\n"
-                if (risk != "NONE") {
-                    report += "  ⚠️ Warning: Potential screen recording or overlay apps detected.\n"
-                }
+                results.add(CheckResult("App Access Risk", if (risk == "NONE") CheckStatus.PASS else CheckStatus.WARNING,
+                    if (risk == "NONE") "No screen recording or overlay apps detected." else "Potential screen recording or overlay apps detected: $risk"))
             }
 
             val appIntegrity = payload.optJSONObject("appIntegrity")
             val appVerdict = appIntegrity?.optString("appRecognitionVerdict", "UNKNOWN")
-            report += "App Recognition: $appVerdict\n"
-            if (appVerdict == "PLAY_RECOGNIZED") {
-                report += "  ✅ The app is officially recognized from Google Play.\n"
-            } else if (appVerdict == "UNRECOGNIZED_VERSION") {
-                report += "  ⚠️ The app is installed but not recognized – possibly a debug or sideloaded build.\n"
-            } else {
-                report += "  ❌ App not recognized – may be tampered with.\n"
+            val (appStatus, appMsg) = when (appVerdict) {
+                "PLAY_RECOGNIZED" -> CheckStatus.PASS to "The app is officially recognized from Google Play."
+                "UNRECOGNIZED_VERSION" -> CheckStatus.WARNING to "The app is installed but not recognized - possibly a debug or sideloaded build."
+                else -> CheckStatus.FAIL to "App not recognized - may be tampered with."
+            }
+            results.add(CheckResult("App Recognition ($appVerdict)", appStatus, appMsg))
+
+            // Cross-check WHICH app/cert this verdict actually describes, rather than trusting
+            // appRecognitionVerdict as a label alone. Google's own Play Integrity docs warn that
+            // requestDetails.requestPackageName "might be spoofed in the middle of the request" -
+            // appIntegrity's own packageName/certificateSha256Digest is what Play Integrity itself
+            // observed about the calling app and is the field actually worth trusting. Only
+            // populated when appRecognitionVerdict != UNEVALUATED (per Google's docs).
+            if (appVerdict != "UNEVALUATED") {
+                val reportedPackage = appIntegrity?.optString("packageName")
+                val packageMatches = reportedPackage == expectedPackageName
+                results.add(CheckResult("Reported Package", if (packageMatches) CheckStatus.PASS else CheckStatus.FAIL,
+                    if (packageMatches) "Matches this app's package name ($reportedPackage)."
+                    else "MISMATCH - this verdict describes a different app (${reportedPackage ?: "MISSING"}), not $expectedPackageName."))
+
+                // certificateSha256Digest entries are base64url-encoded (no padding) per Google's
+                // docs; decode and re-hex to compare against this app's own hex-formatted
+                // signature (getAppSignature()) in the same format used elsewhere in this file.
+                val certDigests = appIntegrity?.optJSONArray("certificateSha256Digest")
+                val certMatches = certDigests != null && (0 until certDigests.length()).any { i ->
+                    try {
+                        val hex = Base64.getUrlDecoder().decode(certDigests.getString(i))
+                            .joinToString("") { "%02X".format(it) }
+                        hex == expectedCertHashHex
+                    } catch (e: Exception) { false }
+                }
+                results.add(CheckResult("Certificate Match", if (certMatches) CheckStatus.PASS else CheckStatus.FAIL,
+                    if (certMatches) "Certificate matches this app's expected signing cert."
+                    else "MISMATCH - certificate digest doesn't match this app's expected signing cert."))
             }
 
             val accountDetails = payload.optJSONObject("accountDetails")
             val licenseVerdict = accountDetails?.optString("appLicensingVerdict", "UNKNOWN")
-            report += "Licensing: $licenseVerdict\n"
-            if (licenseVerdict == "LICENSED") {
-                report += "  ✅ The user has a valid license from Google Play.\n"
-            } else if (licenseVerdict == "UNEVALUATED") {
-                report += "  ⚠️ Licensing could not be evaluated – the app may not be published yet.\n"
-            } else {
-                report += "  ❌ License invalid – the app is not properly licensed.\n"
+            val (licenseStatus, licenseMsg) = when (licenseVerdict) {
+                "LICENSED" -> CheckStatus.PASS to "The user has a valid license from Google Play."
+                "UNEVALUATED" -> CheckStatus.WARNING to "Licensing could not be evaluated - the app may not be published yet."
+                else -> CheckStatus.FAIL to "License invalid - the app is not properly licensed."
             }
+            results.add(CheckResult("Licensing ($licenseVerdict)", licenseStatus, licenseMsg))
 
-            report
+            results
         } catch (e: Exception) {
-            "❌ Parse error: ${e.message}"
+            listOf(CheckResult("Play Integrity", CheckStatus.FAIL, "Parse error: ${e.message}"))
         }
     }
 
@@ -305,18 +330,36 @@ class MainViewModel : ViewModel() {
 
         // 4. ROOT FILES (Magisk & KernelSU)
         val rootPaths = arrayOf(
-            "/sbin/.magisk", 
-            "/data/adb/magisk", 
-            "/data/adb/magisk.db", 
-            "/dev/.magisk_unblock", 
+            "/sbin/.magisk",
+            "/data/adb/magisk",
+            "/data/adb/magisk.db",
+            "/dev/.magisk_unblock",
             "/data/adb/modules",
             "/system/bin/ksud",
             "/data/adb/ksu",
             "/data/adb/ksu/bin/ksud"
         )
-        val rootFilesFound = rootPaths.any { File(it).exists() }
+        var rootFilesFound = rootPaths.any { File(it).exists() }
+        // Also enumerate /data/adb/modules' actual CONTENTS, not just whether the directory
+        // itself exists (which is trivially true on any Magisk install regardless of which
+        // modules are active). Names pulled from what we found necessary to HIDE in the NK SSL
+        // Pinning Bypass Module's own GROUP 1 across prior engagements
+        // ([[project_rbl_prepaid_card_engagement]] / [[project_rbl_lpp_engagement]]) - this app is
+        // NOT scoped into that bypass module, so it sees the real, unhidden listing.
+        val suspiciousModuleNames = listOf(
+            "tricky_store", "zygisk_shamiko", "shamiko", "zygisk", "apatch", "susfs",
+            "playintegrityfix", "xposed", "lsposed", "riru", "hidemyapplist"
+        )
+        val hitModule = try {
+            File("/data/adb/modules").listFiles()?.firstOrNull { dir ->
+                suspiciousModuleNames.any { dir.name.contains(it, ignoreCase = true) }
+            }?.name
+        } catch (e: Exception) { null }
+        if (hitModule != null) rootFilesFound = true
         results.add(CheckResult("Root Files", if (!rootFilesFound) CheckStatus.PASS else CheckStatus.FAIL,
-            if (!rootFilesFound) "No suspicious root files (Magisk/KernelSU)." else "Suspicious root files detected."))
+            if (!rootFilesFound) "No suspicious root files (Magisk/KernelSU)."
+            else if (hitModule != null) "Suspicious Magisk module found: $hitModule."
+            else "Suspicious root files detected."))
 
         // 5. BUILD TAGS
         val buildTags = Build.TAGS
@@ -620,6 +663,53 @@ class MainViewModel : ViewModel() {
         // 2026-era bypass tooling is already reported to intercept this exact class of check at
         // the network layer. One more layer of defense-in-depth, not a guaranteed catch.
         results.add(checkAttestationKeyRevocation())
+
+        // 34-36. NATIVE-LAYER CHECKS - added 2026-09-05 after reverse-engineering com.rbl.rootalert's
+        // NativeGuard (librasp.so): 3 detection techniques that genuinely need native code, since
+        // Java/Kotlin alone can't perform an active ptrace() syscall or inspect resolved-symbol/
+        // instruction-level state. All 3 fail OPEN (WARNING, not FAIL) if the native library itself
+        // couldn't load - an ABI mismatch or load failure means "couldn't check", not "threat found".
+        if (!NativeChecks.isLoaded) {
+            results.add(CheckResult("Native Checks", CheckStatus.WARNING,
+                "nk_native_checks native library failed to load - ptrace/GOT/inline-hook checks skipped."))
+        } else {
+            // 34. ACTIVE PTRACE SELF-TEST - a process can only have ONE tracer at a time, so this
+            // catches a debugger/Frida ALREADY attached before this check runs even if it's hiding
+            // TracerPid (check #12 above only reads /proc/self/status, which a hooked
+            // BufferedReader.readLine() can lie about - this makes the actual privileged syscall
+            // instead of trusting a file read).
+            val ptraceResult = try { NativeChecks.nativePtraceSelfTest() } catch (e: Throwable) { -1 }
+            results.add(CheckResult("Active Ptrace Self-Test",
+                when (ptraceResult) { 0 -> CheckStatus.PASS; 1 -> CheckStatus.FAIL; else -> CheckStatus.WARNING },
+                when (ptraceResult) {
+                    0 -> "No tracer attached (ptrace self-test succeeded)."
+                    1 -> "ptrace(PTRACE_TRACEME) failed with EPERM - this process is already being traced (debugger/Frida present)."
+                    else -> "ptrace self-test was inconclusive."
+                }))
+
+            // 35. GOT/SYMBOL HOOK CHECK - resolves a handful of commonly-hooked libc functions
+            // (open/read/write/ioctl/fopen/access/strstr) via dlsym() and verifies the resolved
+            // address actually falls inside libc.so's own mapped range. Catches symbol-table-level
+            // interposition (e.g. a competing library earlier in the linker's search order) -
+            // complements, not replaces, the inline-hook check below (Frida's default technique
+            // keeps the exported address the same and patches bytes AT that address instead, which
+            // this check alone would not see).
+            val gotHookMsg = try { NativeChecks.nativeCheckGotSymbolHooks() } catch (e: Throwable) { null }
+            results.add(CheckResult("GOT/Symbol Hook Check",
+                if (gotHookMsg == null) CheckStatus.PASS else CheckStatus.FAIL,
+                gotHookMsg ?: "Watched libc symbols (open/read/write/ioctl/fopen/access/strstr) all resolve inside libc.so."))
+
+            // 36. INLINE HOOK CHECK - reads the first 4 bytes at each of the same watched symbols'
+            // resolved addresses and checks for an ARM64 unconditional-branch opcode at the very
+            // start of the function - the instruction Frida's Interceptor.attach() trampoline
+            // writes there by default. Heuristic (doesn't catch the alternate LDR+BR gadget form),
+            // ARM64-only (no-op on other ABIs) - one more layer of defense-in-depth, same honesty
+            // standard as this app's other native-level checks, not a guaranteed catch.
+            val inlineHookMsg = try { NativeChecks.nativeCheckInlineHooks() } catch (e: Throwable) { null }
+            results.add(CheckResult("Inline Hook Check",
+                if (inlineHookMsg == null) CheckStatus.PASS else CheckStatus.FAIL,
+                inlineHookMsg ?: "No unconditional-branch trampoline found at the start of watched libc functions (ARM64 heuristic)."))
+        }
 
         return results
     }
@@ -954,13 +1044,25 @@ class MainViewModel : ViewModel() {
     }
 
     private fun checkHookFrameworks(context: Context): Boolean {
-        // Packages
+        // Packages - expanded to match the fuller rooting/hooking-tool package list this app's own
+        // sibling project (NK SSL Pinning Bypass Module) accumulated across multiple engagements.
+        // Fixed a real bug here too: "org.kernel.su" is not a package any KernelSU build actually
+        // ships (the real manager package is "me.weishu.kernelsu", already correctly used in
+        // rootManagerPackages below) - this exact-match check was silently never matching.
         val hookPackages = listOf(
             "de.robv.android.xposed.installer",
             "org.lsposed.manager",
             "io.github.lsposed.manager",
             "com.topjohnwu.magisk",
-            "org.kernel.su"
+            "com.topjohnwu.magisk.debug",
+            "io.github.vvb2060.magisk",
+            "io.github.vvb2060.magisk.lite",
+            "io.github.huskydg.magisk",
+            "me.weishu.kernelsu",
+            "com.rifsxd.ksunext",
+            "me.bmax.apatch",
+            "com.tsng.hidemyapplist",
+            "me.shingle.fridaserver"
         )
         val pm = context.packageManager
         for (pkg in hookPackages) {
@@ -982,11 +1084,18 @@ class MainViewModel : ViewModel() {
         return false
     }
 
+    // Excludes pre-installed SYSTEM apps (FLAG_SYSTEM) - confirmed live (2026-09-05) that this
+    // check was flagging legitimate OEM apps (com.android.devicediagnostics, com.caf.fmradio,
+    // com.google.android.apps.restore) that hold SYSTEM_ALERT_WINDOW for their own normal,
+    // non-malicious purposes (a diagnostics overlay, FM radio controls, a restore progress UI) -
+    // real overlay-attack risk comes from a THIRD-PARTY app a user installed, not from the OEM's
+    // own preloaded system apps.
     private fun checkOverlayPermission(context: Context): Boolean {
         return try {
             val apps = context.packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
             val overlayApps = apps.filter { app ->
-                context.packageManager.checkPermission(android.Manifest.permission.SYSTEM_ALERT_WINDOW, app.packageName) == PackageManager.PERMISSION_GRANTED
+                (app.flags and ApplicationInfo.FLAG_SYSTEM) == 0 &&
+                    context.packageManager.checkPermission(android.Manifest.permission.SYSTEM_ALERT_WINDOW, app.packageName) == PackageManager.PERMISSION_GRANTED
             }
             overlayApps.isEmpty()
         } catch (e: Exception) { true }

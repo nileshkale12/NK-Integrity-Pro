@@ -136,7 +136,10 @@ val checkSeverity = mapOf(
     "Frida Server Port Scan" to CheckSeverity.HIGH,
     "Magisk Socket Leak" to CheckSeverity.HIGH,
     "Mount Namespace Leak" to CheckSeverity.HIGH,
-    "Attestation Key Revocation" to CheckSeverity.HIGH
+    "Attestation Key Revocation" to CheckSeverity.HIGH,
+    "Active Ptrace Self-Test" to CheckSeverity.HIGH,
+    "GOT/Symbol Hook Check" to CheckSeverity.HIGH,
+    "Inline Hook Check" to CheckSeverity.HIGH
 )
 
 // Global, reactive current check-mode selection - mirrors the NkTheme.isDark pattern
@@ -186,7 +189,10 @@ val checkDescriptions = mapOf(
     "Frida Server Port Scan" to "Scans for a frida-server listening on its default ports (27042/27043), catching it before it attaches to this specific process.",
     "Magisk Socket Leak" to "Checks /proc/net/unix for magiskd's abstract Unix domain socket, which stays visible even when files/packages are hidden. Note: often blocked by SELinux on Android 10+, in which case this fails open to PASS.",
     "Mount Namespace Leak" to "Checks /proc/self/mountinfo for an OverlayFS mount over /system or /vendor - systemless root's own mount leaking into this app's namespace.",
-    "Attestation Key Revocation" to "Checks every certificate in this device's hardware attestation chain against Google's own server-side revocation list - catches a leaked/stolen keybox (e.g. TrickyStore) once Google discovers and revokes it, even if the local Hardware Attestation check above is fooled."
+    "Attestation Key Revocation" to "Checks every certificate in this device's hardware attestation chain against Google's own server-side revocation list - catches a leaked/stolen keybox (e.g. TrickyStore) once Google discovers and revokes it, even if the local Hardware Attestation check above is fooled.",
+    "Active Ptrace Self-Test" to "Calls ptrace(PTRACE_TRACEME) on this process - a process can only have one tracer at a time, so this fails if a debugger or Frida is already attached, even if it's hiding TracerPid at the Java level.",
+    "GOT/Symbol Hook Check" to "Resolves common libc functions (open/read/write/ioctl/fopen/access/strstr) and verifies each address falls inside libc.so's own mapped memory range, catching symbol-table-level interposition.",
+    "Inline Hook Check" to "Reads the first bytes at those same resolved addresses and checks for an ARM64 branch instruction - the trampoline Frida's default Interceptor.attach() writes at a hooked function's entry point."
 )
 
 val checkRemediation = mapOf(
@@ -222,7 +228,10 @@ val checkRemediation = mapOf(
     "Frida Server Port Scan" to "Stop any running frida-server process on the device.",
     "Magisk Socket Leak" to "Uninstall Magisk; magiskd's socket is present whenever its daemon is running.",
     "Mount Namespace Leak" to "Uninstall Magisk/systemless root or flash a stock, unmodified system image.",
-    "Attestation Key Revocation" to "Use a stock, unmodified device; a revoked/suspended key means this device's attestation chain relies on a leaked keybox (e.g. TrickyStore) that Google has already flagged."
+    "Attestation Key Revocation" to "Use a stock, unmodified device; a revoked/suspended key means this device's attestation chain relies on a leaked keybox (e.g. TrickyStore) that Google has already flagged.",
+    "Active Ptrace Self-Test" to "Detach any attached debugger or Frida session before using the app.",
+    "GOT/Symbol Hook Check" to "Uninstall the hooking framework or tool that's redirecting these libc symbols outside libc.so.",
+    "Inline Hook Check" to "Detach any attached Frida session - an inline hook trampoline was found at a watched libc function's entry point."
 )
 
 // ============================================================
@@ -633,7 +642,7 @@ fun IntegrityScreen(
 
     LaunchedEffect(lastResult) {
         if (lastResult.isNotEmpty()) {
-            if (lastResult.contains("❌") || lastResult.contains("Error")) {
+            if (lastResult.any { it.status == CheckStatus.FAIL }) {
                 checkStatus = "Error"
                 statusMessage = "Check failed. See details below."
             } else {
@@ -720,34 +729,39 @@ fun IntegrityScreen(
                     Text("📋 Detailed Report", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    val lines = lastResult.split("\n")
-                    for (line in lines) {
-                        when {
-                            line.startsWith("☁️") -> {
-                                Text(line, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = AccentPrimary)
+                    // Same icon+title+message row style as the Security tab's check list, rather
+                    // than parsing emoji-prefixed text lines back apart line-by-line - one
+                    // consistent look across the whole app for "a list of verdicts."
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(lastResult) { result ->
+                            val color = when (result.status) {
+                                CheckStatus.PASS -> Success
+                                CheckStatus.FAIL -> Danger
+                                CheckStatus.WARNING -> Warning
                             }
-                            line.startsWith("Nonce:") -> {
-                                val status = if (line.contains("✅")) Success else Danger
-                                Text(line, style = MonospaceBodyStyle, color = status, modifier = Modifier.padding(start = 8.dp))
+                            val icon = when (result.status) {
+                                CheckStatus.PASS -> Icons.Default.CheckCircle
+                                CheckStatus.FAIL -> Icons.Default.Close
+                                CheckStatus.WARNING -> Icons.Default.Warning
                             }
-                            line.startsWith("Device Integrity Verdicts:") -> {
-                                Text(line, style = MonospaceBodyStyle, color = TextPrimary, modifier = Modifier.padding(start = 8.dp))
-                            }
-                            line.startsWith("  ✅") -> {
-                                Text(line, style = MonospaceBodyStyle, color = Success, modifier = Modifier.padding(start = 16.dp))
-                            }
-                            line.startsWith("  ❌") -> {
-                                Text(line, style = MonospaceBodyStyle, color = Danger, modifier = Modifier.padding(start = 16.dp))
-                            }
-                            line.startsWith("  ⚠️") -> {
-                                Text(line, style = MonospaceBodyStyle, color = Warning, modifier = Modifier.padding(start = 16.dp))
-                            }
-                            line.startsWith("App Recognition:") || line.startsWith("App Access Risk:") || line.startsWith("Licensing:") -> {
-                                Text(line, style = MonospaceBodyStyle, color = TextPrimary, modifier = Modifier.padding(start = 8.dp))
-                            }
-                            else -> {
-                                if (line.isNotBlank()) {
-                                    Text(line, style = MonospaceBodyStyle, color = TextSecondary, modifier = Modifier.padding(start = 8.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = GlassCardBg),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(result.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                        Text(result.message, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                    }
                                 }
                             }
                         }
